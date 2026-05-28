@@ -522,5 +522,5 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const PORT = process.env.PORT || 3000;
 initDB().then(() => {
-  server.listen(PORT, () => console.log(`✓ Kalinabiri API running on port ${PORT}`));
+  server.listen(PORT, '0.0.0.0', () => console.log(`✓ Kalinabiri API running on port ${PORT}`));
 }).catch(e => { console.error('DB init failed:', e); process.exit(1); });
