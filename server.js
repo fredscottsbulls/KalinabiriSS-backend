@@ -238,12 +238,16 @@ app.get('/api/admin/stats', authenticate, requireRole('admin'), async (req, res)
   const announcements = await pool.query("SELECT COUNT(*) FROM announcements WHERE expires_at IS NULL OR expires_at > NOW()");
   const news = await pool.query("SELECT COUNT(*) FROM news WHERE published = true");
   res.json({
-    students: parseInt(students.rows[0].count),
-    teachers: parseInt(teachers.rows[0].count),
+    totalStudents: parseInt(students.rows[0].count),
+    totalTeachers: parseInt(teachers.rows[0].count),
     newAdmissions: parseInt(admissions.rows[0].count),
     pendingFees: parseFloat(pendingFees.rows[0].sum),
     announcements: parseInt(announcements.rows[0].count),
-    news: parseInt(news.rows[0].count)
+    publishedNews: parseInt(news.rows[0].count),
+    // aliases for compatibility
+    students: parseInt(students.rows[0].count),
+    teachers: parseInt(teachers.rows[0].count),
+    feeCollection: 0,
   });
 });
 
@@ -256,7 +260,7 @@ app.get('/api/admin/users', authenticate, requireRole('admin', 'teacher'), async
   if (search) { params.push(`%${search}%`); query += ` AND (first_name ILIKE $${params.length} OR last_name ILIKE $${params.length} OR username ILIKE $${params.length})`; }
   query += ' ORDER BY created_at DESC';
   const result = await pool.query(query, params);
-  res.json(result.rows);
+  res.json({ users: result.rows });
 });
 
 app.put('/api/admin/users/:id', authenticate, requireRole('admin'), async (req, res) => {
@@ -445,7 +449,7 @@ app.get('/api/news', async (req, res) => {
 
 app.get('/api/admin/news', authenticate, requireRole('admin'), async (req, res) => {
   const result = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
-  res.json(result.rows);
+  res.json({ news: result.rows });
 });
 
 app.post('/api/admin/news', authenticate, requireRole('admin'), async (req, res) => {
