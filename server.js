@@ -382,18 +382,54 @@ app.get('/api/announcements', async (req, res) => {
   res.json(result.rows);
 });
 
-app.get('/api/admin/announcements', authenticate, requireRole('admin'), async (req, res) => {
+// Announcements (admin + teacher can view/post)
+app.get('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const result = await pool.query('SELECT * FROM announcements ORDER BY created_at DESC');
-  res.json(result.rows);
+  res.json({ announcements: result.rows });
 });
 
-app.post('/api/admin/announcements', authenticate, requireRole('admin'), async (req, res) => {
+app.post('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const { title, content, category, priority, expires_at } = req.body;
-  await pool.query(
-    `INSERT INTO announcements (title,content,category,priority,expires_at,created_by) VALUES ($1,$2,$3,$4,$5,$6)`,
+  const result = await pool.query(
+    `INSERT INTO announcements (title,content,category,priority,expires_at,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
     [title, content, category, priority, expires_at, req.user.id]
   );
-  res.json({ message: 'Announcement created' });
+  res.json({ announcement: result.rows[0] });
+});
+
+// Assignments (admin + teacher)
+app.get('/api/admin/assignments', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { teacher_id, class: cls } = req.query;
+  let query = 'SELECT * FROM assignments WHERE 1=1';
+  const params = [];
+  if (teacher_id) { params.push(teacher_id); query += ` AND teacher_id = $${params.length}`; }
+  if (cls) { params.push(cls); query += ` AND class = $${params.length}`; }
+  query += ' ORDER BY created_at DESC';
+  const result = await pool.query(query, params);
+  res.json({ assignments: result.rows });
+});
+
+app.post('/api/admin/assignments', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { title, description, class: cls, subject, due_date, max_marks } = req.body;
+  const result = await pool.query(
+    `INSERT INTO assignments (title,description,class,subject,due_date,max_marks,teacher_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [title, description, cls, subject, due_date, max_marks, req.user.id]
+  );
+  res.json({ assignment: result.rows[0] });
+});
+
+app.put('/api/admin/assignments/:id', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { title, description, class: cls, subject, due_date, max_marks } = req.body;
+  const result = await pool.query(
+    `UPDATE assignments SET title=$1,description=$2,class=$3,subject=$4,due_date=$5,max_marks=$6 WHERE id=$7 RETURNING *`,
+    [title, description, cls, subject, due_date, max_marks, req.params.id]
+  );
+  res.json({ assignment: result.rows[0] });
+});
+
+app.delete('/api/admin/assignments/:id', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  await pool.query('DELETE FROM assignments WHERE id=$1', [req.params.id]);
+  res.json({ message: 'Assignment deleted' });
 });
 
 app.delete('/api/admin/announcements/:id', authenticate, requireRole('admin'), async (req, res) => {
@@ -529,6 +565,16 @@ io.on('connection', (socket) => {
     await pool.query('INSERT INTO notifications (user_id,type,title,message) VALUES ($1,$2,$3,$4)', [user_id, type, title, message]);
     io.to(`user_${user_id}`).emit('notification', { type, title, message });
   });
+});
+
+// DB exec (admin only — for schema setup)
+app.post('/api/admin/db', authenticate, requireRole('admin'), async (req, res) => {
+  try {
+    const { sql } = req.body;
+    if (!sql) return res.status(400).json({ error: 'sql required' });
+    await pool.query(sql);
+    res.json({ message: 'OK' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Static files
