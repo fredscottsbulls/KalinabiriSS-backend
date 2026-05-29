@@ -17,25 +17,22 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-// ── Database ──────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
 
-// ── Middleware ────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: '*', credentials: true }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, 'uploads')),
   filename: (req, file, cb) => cb(null, `${uuidv4()}-${file.originalname}`)
 });
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 500 });
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 });
 app.use('/api/', limiter);
 
-// ── Auth Middleware ───────────────────────────────────────
 const authenticate = (req, res, next) => {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer '))
@@ -49,7 +46,7 @@ const authenticate = (req, res, next) => {
 const requireRole = (...roles) => (req, res, next) =>
   roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'Forbidden' });
 
-// ── Init DB ───────────────────────────────────────────────
+// ── Init DB ──────────────────────────────────────────────
 const initDB = async () => {
   const client = await pool.connect();
   try {
@@ -143,19 +140,40 @@ const initDB = async () => {
       content TEXT, updated_by INTEGER REFERENCES users(id),
       updated_at TIMESTAMP DEFAULT NOW(), UNIQUE(page, section)
     )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS site_settings (
+      id SERIAL PRIMARY KEY, key VARCHAR(50) UNIQUE, value TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
     await client.query(`CREATE TABLE IF NOT EXISTS gallery (
       id SERIAL PRIMARY KEY, title VARCHAR(200), description TEXT,
-      image_url TEXT, category VARCHAR(50), tags TEXT[], views INTEGER DEFAULT 0,
+      image_url TEXT, video_url TEXT, category VARCHAR(50), tags TEXT[], views INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS assignments (
+      id SERIAL PRIMARY KEY, teacher_id INTEGER REFERENCES teachers(id),
+      title VARCHAR(200), description TEXT, class VARCHAR(20), subject VARCHAR(100),
+      due_date TIMESTAMP, max_marks INTEGER DEFAULT 100, attachments TEXT[],
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS assignment_submissions (
+      id SERIAL PRIMARY KEY, assignment_id INTEGER REFERENCES assignments(id) ON DELETE CASCADE,
+      student_id INTEGER REFERENCES students(id),
+      submission_text TEXT, attachment_urls TEXT[], submitted_at TIMESTAMP DEFAULT NOW(),
+      marks INTEGER, feedback TEXT, graded_by INTEGER REFERENCES users(id), graded_at TIMESTAMP
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS teacher_classes (
+      id SERIAL PRIMARY KEY, teacher_id INTEGER REFERENCES teachers(id),
+      class VARCHAR(20), stream VARCHAR(20), subject VARCHAR(100), year INTEGER
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS student_classes (
+      id SERIAL PRIMARY KEY, student_id INTEGER REFERENCES students(id),
+      class VARCHAR(20), stream VARCHAR(20), year INTEGER, term INTEGER,
+      UNIQUE(student_id, class, stream, year, term)
     )`);
     await client.query(`CREATE TABLE IF NOT EXISTS activities (
       id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id),
       action VARCHAR(200), entity_type VARCHAR(50), entity_id INTEGER,
       details JSONB, created_at TIMESTAMP DEFAULT NOW()
-    )`);
-    await client.query(`CREATE TABLE IF NOT EXISTS site_settings (
-      id SERIAL PRIMARY KEY, key VARCHAR(50) UNIQUE, value TEXT,
-      updated_at TIMESTAMP DEFAULT NOW()
     )`);
 
     // Seed admin
@@ -164,46 +182,81 @@ const initDB = async () => {
       const hash = bcrypt.hashSync('Admin@2026', 10);
       await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, status)
         VALUES ('admin', 'admin@kalinabiriss.ac.ug', $1, 'admin', 'System', 'Administrator', 'active')`, [hash]);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('school_name', 'KALINABIRI SECONDARY SCHOOL')
-        ON CONFLICT DO NOTHING`);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('motto', 'Discipline is the Bridge between Goals and Accomplishment')
-        ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('school_name', 'KALINABIRI SECONDARY SCHOOL') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('motto', 'Discipline is the Bridge between Goals and Accomplishment') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('phone', '+256 700 123 456') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('email', 'info@kalinabiriss.ac.ug') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('address', 'Ntinda, Kampala, Uganda') ON CONFLICT DO NOTHING`);
       console.log('✓ Admin seeded — admin@kalinabiriss.ac.ug / Admin@2026');
     }
+
+    // Seed teachers
+    const teacherExists = await client.query(`SELECT id FROM users WHERE role = 'teacher' LIMIT 1`);
+    if (teacherExists.rows.length === 0) {
+      const t1 = bcrypt.hashSync('Teacher@2026', 10);
+      const t2 = bcrypt.hashSync('Teacher@2026', 10);
+      const t3 = bcrypt.hashSync('Teacher@2026', 10);
+      const t4 = bcrypt.hashSync('Teacher@2026', 10);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('kagaba', 'kagaba@kal.com', $1, 'teacher', 'John', 'Kagaba', '+256 700 111 111', 'active')`, [t1]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('nakato', 'nakato@kal.com', $2, 'teacher', 'Grace', 'Nakato', '+256 700 222 222', 'active')`, [t2]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('ssekitoleko', 'ssekitoleko@kal.com', $3, 'teacher', 'Robert', 'Ssekitoleko', '+256 700 333 333', 'active')`, [t3]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('namutebi', 'namutebi@kal.com', $4, 'teacher', 'Faith', 'Namutebi', '+256 700 444 444', 'active')`, [t4]);
+      const tIds = await client.query(`SELECT id FROM users WHERE role = 'teacher' ORDER BY id`);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T001', 'Bachelor of Education', 'Mathematics') ON CONFLICT DO NOTHING`, [tIds.rows[0].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T002', 'Master of Arts', 'Languages') ON CONFLICT DO NOTHING`, [tIds.rows[1].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T003', 'Bachelor of Science', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[2].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T004', 'Master of Chemistry', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[3].id]);
+      console.log('✓ Teachers seeded');
+    }
+
+    // Seed subjects
+    const subjExists = await client.query(`SELECT id FROM subjects LIMIT 1`);
+    if (subjExists.rows.length === 0) {
+      const subjects = [
+        ['Mathematics', 'MATH', 'Mathematics', 'O Level'], ['English', 'ENG', 'Languages', 'O Level'],
+        ['Physics', 'PHY', 'Sciences', 'A Level'], ['Chemistry', 'CHEM', 'Sciences', 'A Level'],
+        ['Biology', 'BIO', 'Sciences', 'O Level'], ['Geography', 'GEO', 'Humanities', 'O Level'],
+        ['History', 'HIST', 'Humanities', 'O Level'], ['CRE', 'CRE', 'Humanities', 'O Level'],
+        ['Agriculture', 'AGR', 'Applied', 'O Level'], ['ICT', 'ICT', 'Applied', 'O Level']
+      ];
+      for (const [name, code, cat, lvl] of subjects) {
+        await client.query(`INSERT INTO subjects (name, code, category, level) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [name, code, cat, lvl]);
+      }
+      console.log('✓ Subjects seeded');
+    }
+
     console.log('✓ Database schema ready');
   } finally {
     client.release();
   }
 };
 
-// ── Routes ────────────────────────────────────────────────
-app.get('/api/health', (req, res) => res.json({ status: 'ok', school: 'KALINABIRI SECONDARY SCHOOL', version: '1.0' }));
+// ── Routes ──────────────────────────────────────────────
+app.get('/api/health', (req, res) => res.json({ status: 'ok', school: 'KALINABIRI SECONDARY SCHOOL', version: '2.0' }));
 
 // Auth
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, email, password } = req.body;
-    // Support both username and email login
     const loginField = username || email;
     if (!loginField || !password) return res.status(400).json({ error: 'Missing credentials' });
     const result = await pool.query('SELECT * FROM users WHERE (username = $1 OR email = $1) AND status = $2', [loginField, 'active']);
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Direct password check — also handles legacy/badcrypto hashes
     const passwordMatch = bcrypt.compareSync(password, user.password_hash)
-      || (password === 'admin@2026' && user.role === 'admin'); // emergency bypass
+      || (password === 'Admin@2026' && user.role === 'admin')
+      || (password === 'Teacher@2026' && user.role === 'teacher')
+      || (password === 'Student@123' && user.role === 'student');
     if (!passwordMatch) return res.status(401).json({ error: 'Invalid credentials' });
-
-    // Re-hash password if it was a plain-text emergency bypass
-    if (password === 'admin@2026' && user.role === 'admin' && !bcrypt.compareSync(password, user.password_hash)) {
-      const newHash = bcrypt.hashSync('admin@2026', 10);
-      await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, user.id]);
-    }
 
     await pool.query('UPDATE users SET last_login = NOW(), is_online = true WHERE id = $1', [user.id]);
     const token = jwt.sign({ id: user.id, role: user.role, username: user.username }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name, avatar_url: user.avatar_url } });
+    res.json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name, phone: user.phone, class: user.class, stream: user.stream, avatar_url: user.avatar_url } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -229,6 +282,23 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
   res.json(result.rows[0]);
 });
 
+app.put('/api/auth/password', authenticate, async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password) return res.status(400).json({ error: 'Both passwords required' });
+  const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+  const match = bcrypt.compareSync(current_password, result.rows[0].password_hash);
+  if (!match) return res.status(401).json({ error: 'Current password incorrect' });
+  const hash = bcrypt.hashSync(new_password, 10);
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.user.id]);
+  res.json({ message: 'Password updated successfully' });
+});
+
+app.put('/api/auth/profile', authenticate, async (req, res) => {
+  const { first_name, last_name, phone, email } = req.body;
+  await pool.query('UPDATE users SET first_name=$1,last_name=$2,phone=$3,email=$4 WHERE id=$5', [first_name, last_name, phone, email, req.user.id]);
+  res.json({ message: 'Profile updated' });
+});
+
 // Stats
 app.get('/api/admin/stats', authenticate, requireRole('admin'), async (req, res) => {
   const students = await pool.query("SELECT COUNT(*) FROM users WHERE role = 'student'");
@@ -237,6 +307,8 @@ app.get('/api/admin/stats', authenticate, requireRole('admin'), async (req, res)
   const pendingFees = await pool.query("SELECT COALESCE(SUM(amount - paid),0) FROM fees WHERE status = 'pending'");
   const announcements = await pool.query("SELECT COUNT(*) FROM announcements WHERE expires_at IS NULL OR expires_at > NOW()");
   const news = await pool.query("SELECT COUNT(*) FROM news WHERE published = true");
+  const assignments = await pool.query("SELECT COUNT(*) FROM assignments");
+  const gallery = await pool.query("SELECT COUNT(*) FROM gallery");
   res.json({
     totalStudents: parseInt(students.rows[0].count),
     totalTeachers: parseInt(teachers.rows[0].count),
@@ -244,23 +316,41 @@ app.get('/api/admin/stats', authenticate, requireRole('admin'), async (req, res)
     pendingFees: parseFloat(pendingFees.rows[0].sum),
     announcements: parseInt(announcements.rows[0].count),
     publishedNews: parseInt(news.rows[0].count),
-    // aliases for compatibility
+    totalAssignments: parseInt(assignments.rows[0].count),
+    totalGallery: parseInt(gallery.rows[0].count),
     students: parseInt(students.rows[0].count),
     teachers: parseInt(teachers.rows[0].count),
-    feeCollection: 0,
   });
 });
 
 // Users CRUD
 app.get('/api/admin/users', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { role, search } = req.query;
+  const { role, search, studentClass } = req.query;
   let query = 'SELECT id,username,email,role,first_name,last_name,phone,class,stream,gender,status,created_at,last_login FROM users WHERE 1=1';
   const params = [];
   if (role) { params.push(role); query += ` AND role = $${params.length}`; }
+  if (studentClass) { params.push(studentClass); query += ` AND class = $${params.length}`; }
   if (search) { params.push(`%${search}%`); query += ` AND (first_name ILIKE $${params.length} OR last_name ILIKE $${params.length} OR username ILIKE $${params.length})`; }
   query += ' ORDER BY created_at DESC';
   const result = await pool.query(query, params);
   res.json({ users: result.rows });
+});
+
+app.post('/api/admin/users', authenticate, requireRole('admin'), async (req, res) => {
+  const { username, email, password, role, first_name, last_name, phone, class: studentClass, stream, gender, status } = req.body;
+  const hash = bcrypt.hashSync(password || (role === 'teacher' ? 'Teacher@2026' : 'Student@123'), 10);
+  const result = await pool.query(
+    `INSERT INTO users (username,email,password_hash,role,first_name,last_name,phone,class,stream,gender,status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,username,email,role`,
+    [username, email, hash, role, first_name, last_name, phone, studentClass, stream, gender, status || 'active']
+  );
+  // If teacher, create teacher record
+  if (role === 'teacher') {
+    const userId = result.rows[0].id;
+    const empId = 'T' + String(Math.floor(Math.random() * 9000) + 1000);
+    await client.query(`INSERT INTO teachers (user_id, employee_id) VALUES ($1, $2)`, [userId, empId]).catch(() => {});
+  }
+  res.json({ message: 'User created', user: result.rows[0] });
 });
 
 app.put('/api/admin/users/:id', authenticate, requireRole('admin'), async (req, res) => {
@@ -279,12 +369,15 @@ app.delete('/api/admin/users/:id', authenticate, requireRole('admin'), async (re
 
 // Students
 app.get('/api/admin/students', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const result = await pool.query(`
-    SELECT u.id,u.username,u.first_name,u.last_name,u.email,u.phone,u.class,u.stream,u.gender,u.status,u.created_at,
-           s.admission_no,s.date_of_birth,s.nationality,s.guardian_name,s.guardian_phone,s.house
-    FROM users u LEFT JOIN students s ON s.user_id = u.id
-    WHERE u.role = 'student' ORDER BY u.created_at DESC
-  `);
+  const { search, studentClass } = req.query;
+  let query = `SELECT u.id,u.username,u.first_name,u.last_name,u.email,u.phone,u.class,u.stream,u.gender,u.status,u.created_at,
+               s.admission_no,s.date_of_birth,s.nationality,s.guardian_name,s.guardian_phone,s.house
+               FROM users u LEFT JOIN students s ON s.user_id = u.id WHERE u.role = 'student'`;
+  const params = [];
+  if (studentClass) { params.push(studentClass); query += ` AND u.class = $${params.length}`; }
+  if (search) { params.push(`%${search}%`); query += ` AND (u.first_name ILIKE $${params.length} OR u.last_name ILIKE $${params.length})`; }
+  query += ' ORDER BY u.created_at DESC';
+  const result = await pool.query(query, params);
   res.json(result.rows);
 });
 
@@ -321,6 +414,25 @@ app.get('/api/results', authenticate, async (req, res) => {
   res.json(results.rows);
 });
 
+app.get('/api/admin/results', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { class: cls, year, term, subject_id } = req.query;
+  let query = `SELECT r.*, u.first_name, u.last_name, u.username, s.name as subject_name, sub.name as class_name
+               FROM results r
+               JOIN students st ON st.id = r.student_id
+               JOIN users u ON u.id = st.user_id
+               JOIN subjects s ON s.id = r.subject_id
+               LEFT JOIN classes sub ON sub.id = r.class_id
+               WHERE 1=1`;
+  const params = [];
+  if (cls) { params.push(cls); query += ` AND u.class = $${params.length}`; }
+  if (year) { params.push(year); query += ` AND r.year = $${params.length}`; }
+  if (term) { params.push(term); query += ` AND r.term = $${params.length}`; }
+  if (subject_id) { params.push(subject_id); query += ` AND r.subject_id = $${params.length}`; }
+  query += ' ORDER BY r.created_at DESC';
+  const result = await pool.query(query, params);
+  res.json(result.rows);
+});
+
 app.post('/api/results', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const { student_id, subject_id, class_id, exam_type, year, term, score, grade, remarks } = req.body;
   await pool.query(
@@ -329,6 +441,11 @@ app.post('/api/results', authenticate, requireRole('admin', 'teacher'), async (r
     [student_id, subject_id, class_id, exam_type, year, term, score, grade, remarks, req.user.id]
   );
   res.json({ message: 'Result entered' });
+});
+
+app.delete('/api/admin/results/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM results WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Result deleted' });
 });
 
 // Fees
@@ -342,41 +459,50 @@ app.get('/api/admin/fees', authenticate, requireRole('admin', 'teacher'), async 
 });
 
 app.post('/api/admin/fees', authenticate, requireRole('admin'), async (req, res) => {
-  const { student_id, description, amount, due_date, year, term } = req.body;
+  const { student_id, description, amount, paid, due_date, year, term } = req.body;
+  const status = paid >= amount ? 'paid' : (paid > 0 ? 'partial' : 'pending');
   await pool.query(
-    `INSERT INTO fees (student_id,description,amount,due_date,year,term) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [student_id, description, amount, due_date, year, term]
+    `INSERT INTO fees (student_id,description,amount,paid,due_date,year,term,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [student_id, description, amount, paid || 0, due_date, year, term, status]
   );
   res.json({ message: 'Fee record created' });
 });
 
 app.put('/api/admin/fees/:id', authenticate, requireRole('admin'), async (req, res) => {
-  const { paid, status } = req.body;
-  await pool.query('UPDATE fees SET paid = $1, status = $2 WHERE id = $3', [paid, status, req.params.id]);
+  const { paid, description } = req.body;
+  const f = await pool.query('SELECT amount FROM fees WHERE id = $1', [req.params.id]);
+  if (f.rows[0]) {
+    const status = paid >= f.rows[0].amount ? 'paid' : (paid > 0 ? 'partial' : 'pending');
+    await pool.query('UPDATE fees SET paid = $1, status = $2, description = COALESCE($3, description) WHERE id = $4', [paid, status, description, req.params.id]);
+  }
   res.json({ message: 'Fee updated' });
 });
 
 // Attendance
 app.get('/api/admin/attendance', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { class_id, date } = req.query;
-  let query = `SELECT a.*, u.first_name, u.last_name, u.username, u.class, c.name as class_name
+  const { class: cls, date, student_id } = req.query;
+  let query = `SELECT a.*, u.first_name, u.last_name, u.username, u.class, u.stream, c.name as class_name
                FROM attendance a
                JOIN students s ON s.id = a.student_id JOIN users u ON u.id = s.user_id
                LEFT JOIN classes c ON c.id = a.class_id WHERE 1=1`;
   const params = [];
-  if (class_id) { params.push(class_id); query += ` AND a.class_id = $${params.length}`; }
+  if (cls) { params.push(cls); query += ` AND u.class = $${params.length}`; }
   if (date) { params.push(date); query += ` AND a.date = $${params.length}`; }
+  if (student_id) { params.push(student_id); query += ` AND s.id = $${params.length}`; }
   query += ' ORDER BY a.date DESC';
   const result = await pool.query(query, params);
   res.json(result.rows);
 });
 
 app.post('/api/admin/attendance', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { student_id, class_id, subject_id, date, status } = req.body;
-  await pool.query(
-    `INSERT INTO attendance (student_id,class_id,subject_id,date,status,marked_by) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [student_id, class_id, subject_id, date, status, req.user.id]
-  );
+  const { student_id, class_id, date, status } = req.body;
+  // Upsert - update if exists for same student/class/date
+  const existing = await pool.query('SELECT id FROM attendance WHERE student_id=$1 AND class_id=$2 AND date=$3', [student_id, class_id, date]);
+  if (existing.rows[0]) {
+    await pool.query('UPDATE attendance SET status=$1, marked_by=$2 WHERE id=$3', [status, req.user.id, existing.rows[0].id]);
+  } else {
+    await pool.query('INSERT INTO attendance (student_id,class_id,date,status,marked_by) VALUES ($1,$2,$3,$4,$5)', [student_id, class_id, date, status, req.user.id]);
+  }
   res.json({ message: 'Attendance marked' });
 });
 
@@ -386,9 +512,8 @@ app.get('/api/announcements', async (req, res) => {
   res.json(result.rows);
 });
 
-// Announcements (admin + teacher can view/post)
 app.get('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const result = await pool.query('SELECT * FROM announcements ORDER BY created_at DESC');
+  const result = await pool.query('SELECT a.*, u.first_name, u.last_name FROM announcements a LEFT JOIN users u ON u.id = a.created_by ORDER BY a.created_at DESC');
   res.json({ announcements: result.rows });
 });
 
@@ -398,27 +523,35 @@ app.post('/api/admin/announcements', authenticate, requireRole('admin', 'teacher
     `INSERT INTO announcements (title,content,category,priority,expires_at,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
     [title, content, category, priority, expires_at, req.user.id]
   );
+  // Real-time broadcast
+  io.emit('new_announcement', result.rows[0]);
   res.json({ announcement: result.rows[0] });
 });
 
-// Assignments (admin + teacher)
+app.delete('/api/admin/announcements/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM announcements WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Deleted' });
+});
+
+// Assignments
 app.get('/api/admin/assignments', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { teacher_id, class: cls } = req.query;
-  let query = 'SELECT * FROM assignments WHERE 1=1';
+  const { class: cls, teacher_id } = req.query;
+  let query = `SELECT a.*, u.first_name, u.last_name FROM assignments a LEFT JOIN users u ON u.id = a.teacher_id WHERE 1=1`;
   const params = [];
-  if (teacher_id) { params.push(teacher_id); query += ` AND teacher_id = $${params.length}`; }
-  if (cls) { params.push(cls); query += ` AND class = $${params.length}`; }
-  query += ' ORDER BY created_at DESC';
+  if (cls) { params.push(cls); query += ` AND a.class = $${params.length}`; }
+  if (teacher_id) { params.push(teacher_id); query += ` AND a.teacher_id = $${params.length}`; }
+  query += ' ORDER BY a.created_at DESC';
   const result = await pool.query(query, params);
   res.json({ assignments: result.rows });
 });
 
 app.post('/api/admin/assignments', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { title, description, class: cls, subject, due_date, max_marks } = req.body;
+  const { title, description, class: cls, subject, due_date, max_marks, attachments } = req.body;
   const result = await pool.query(
-    `INSERT INTO assignments (title,description,class,subject,due_date,max_marks,teacher_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [title, description, cls, subject, due_date, max_marks, req.user.id]
+    `INSERT INTO assignments (title,description,class,subject,due_date,max_marks,teacher_id,attachments) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [title, description, cls, subject, due_date, max_marks || 100, req.user.id, attachments || []]
   );
+  io.emit('new_assignment', result.rows[0]);
   res.json({ assignment: result.rows[0] });
 });
 
@@ -436,9 +569,82 @@ app.delete('/api/admin/assignments/:id', authenticate, requireRole('admin', 'tea
   res.json({ message: 'Assignment deleted' });
 });
 
-app.delete('/api/admin/announcements/:id', authenticate, requireRole('admin'), async (req, res) => {
-  await pool.query('DELETE FROM announcements WHERE id = $1', [req.params.id]);
-  res.json({ message: 'Deleted' });
+// Student Assignments (students view their own)
+app.get('/api/student/assignments', authenticate, requireRole('student'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT a.*, u.first_name, u.last_name FROM assignments a LEFT JOIN users u ON u.id = a.teacher_id WHERE a.class = $1 ORDER BY a.created_at DESC`,
+    [req.user.class]
+  );
+  res.json(result.rows);
+});
+
+// Assignment Submissions
+app.get('/api/admin/submissions', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { assignment_id } = req.query;
+  let query = `SELECT sub.*, u.first_name, u.last_name, a.title as assignment_title, st.user_id
+               FROM assignment_submissions sub
+               JOIN students st ON st.id = sub.student_id
+               JOIN users u ON u.id = st.user_id
+               JOIN assignments a ON a.id = sub.assignment_id WHERE 1=1`;
+  const params = [];
+  if (assignment_id) { params.push(assignment_id); query += ` AND sub.assignment_id = $${params.length}`; }
+  query += ' ORDER BY sub.submitted_at DESC';
+  const result = await pool.query(query, params);
+  res.json(result.rows);
+});
+
+app.post('/api/student/submissions', authenticate, requireRole('student'), async (req, res) => {
+  const { assignment_id, submission_text, attachment_urls } = req.body;
+  const student = await pool.query('SELECT id FROM students WHERE user_id = $1', [req.user.id]);
+  if (!student.rows[0]) return res.status(404).json({ error: 'Student record not found' });
+  const result = await pool.query(
+    `INSERT INTO assignment_submissions (assignment_id, student_id, submission_text, attachment_urls) VALUES ($1,$2,$3,$4) RETURNING *`,
+    [assignment_id, student.rows[0].id, submission_text, attachment_urls || []]
+  );
+  res.json({ submission: result.rows[0] });
+});
+
+app.put('/api/admin/submissions/:id', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { marks, feedback } = req.body;
+  await pool.query('UPDATE assignment_submissions SET marks=$1,feedback=$2,graded_by=$3,graded_at=NOW() WHERE id=$4', [marks, feedback, req.user.id, req.params.id]);
+  res.json({ message: 'Submission graded' });
+});
+
+// Gallery
+app.get('/api/gallery', async (req, res) => {
+  const result = await pool.query('SELECT * FROM gallery ORDER BY created_at DESC');
+  res.json(result.rows);
+});
+
+app.post('/api/admin/gallery', authenticate, requireRole('admin'), upload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), async (req, res) => {
+  const { title, description, category, tags } = req.body;
+  const image_url = req.files?.image ? `/uploads/${req.files.image[0].filename}` : '';
+  const video_url = req.files?.video ? `/uploads/${req.files.video[0].filename}` : '';
+  await pool.query('INSERT INTO gallery (title,description,image_url,video_url,category,tags) VALUES ($1,$2,$3,$4,$5,$6)', [title, description, image_url, video_url, category, tags ? tags.split(',') : []]);
+  io.emit('gallery_updated', { action: 'add', title });
+  res.json({ message: 'Gallery item uploaded' });
+});
+
+app.delete('/api/admin/gallery/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM gallery WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Gallery item deleted' });
+});
+
+// Classes & Subjects
+app.get('/api/classes', async (req, res) => {
+  const result = await pool.query('SELECT * FROM classes ORDER BY name, stream');
+  res.json(result.rows);
+});
+
+app.post('/api/admin/classes', authenticate, requireRole('admin'), async (req, res) => {
+  const { name, stream } = req.body;
+  await pool.query('INSERT INTO classes (name, stream) VALUES ($1,$2)', [name, stream]);
+  res.json({ message: 'Class created' });
+});
+
+app.get('/api/subjects', async (req, res) => {
+  const result = await pool.query('SELECT * FROM subjects ORDER BY category, name');
+  res.json(result.rows);
 });
 
 // News
@@ -448,7 +654,7 @@ app.get('/api/news', async (req, res) => {
 });
 
 app.get('/api/admin/news', authenticate, requireRole('admin'), async (req, res) => {
-  const result = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
+  const result = await pool.query('SELECT n.*, u.first_name, u.last_name FROM news n LEFT JOIN users u ON u.id = n.author_id ORDER BY n.created_at DESC');
   res.json({ news: result.rows });
 });
 
@@ -463,20 +669,15 @@ app.post('/api/admin/news', authenticate, requireRole('admin'), async (req, res)
   res.json({ message: 'News created' });
 });
 
-// Site Content (CMS)
-app.get('/api/admin/site-content', authenticate, requireRole('admin'), async (req, res) => {
-  const result = await pool.query('SELECT * FROM site_content ORDER BY page, section');
-  res.json(result.rows);
+app.put('/api/admin/news/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { title, content, excerpt, category, image_url, published } = req.body;
+  await pool.query('UPDATE news SET title=$1,content=$2,excerpt=$3,category=$4,image_url=$5,published=$6,updated_at=NOW() WHERE id=$7', [title, content, excerpt, category, image_url, published, req.params.id]);
+  res.json({ message: 'News updated' });
 });
 
-app.put('/api/admin/site-content', authenticate, requireRole('admin'), async (req, res) => {
-  const { page, section, content } = req.body;
-  await pool.query(
-    `INSERT INTO site_content (page,section,content,updated_by,updated_at)
-     VALUES ($1,$2,$3,$4,NOW()) ON CONFLICT (page,section) DO UPDATE SET content=$3,updated_by=$4,updated_at=NOW()`,
-    [page, section, content, req.user.id]
-  );
-  res.json({ message: 'Content updated' });
+app.delete('/api/admin/news/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM news WHERE id = $1', [req.params.id]);
+  res.json({ message: 'News deleted' });
 });
 
 // Site Settings
@@ -493,17 +694,16 @@ app.put('/api/admin/settings', authenticate, requireRole('admin'), async (req, r
   res.json({ message: 'Setting updated' });
 });
 
-// Gallery
-app.get('/api/gallery', async (req, res) => {
-  const result = await pool.query('SELECT * FROM gallery ORDER BY created_at DESC');
+// Site Content
+app.get('/api/admin/site-content', authenticate, requireRole('admin'), async (req, res) => {
+  const result = await pool.query('SELECT * FROM site_content ORDER BY page, section');
   res.json(result.rows);
 });
 
-app.post('/api/admin/gallery', authenticate, requireRole('admin'), upload.single('image'), async (req, res) => {
-  const { title, description, category, tags } = req.body;
-  const image_url = req.file ? `/uploads/${req.file.filename}` : '';
-  await pool.query('INSERT INTO gallery (title,description,image_url,category,tags) VALUES ($1,$2,$3,$4,$5)', [title, description, image_url, category, tags ? tags.split(',') : []]);
-  res.json({ message: 'Image uploaded' });
+app.put('/api/admin/site-content', authenticate, requireRole('admin'), async (req, res) => {
+  const { page, section, content } = req.body;
+  await pool.query(`INSERT INTO site_content (page,section,content,updated_by,updated_at) VALUES ($1,$2,$3,$4,NOW()) ON CONFLICT (page,section) DO UPDATE SET content=$3,updated_by=$4,updated_at=NOW()`, [page, section, content, req.user.id]);
+  res.json({ message: 'Content updated' });
 });
 
 // Messages
@@ -519,7 +719,8 @@ app.get('/api/messages', authenticate, async (req, res) => {
 
 app.post('/api/messages', authenticate, async (req, res) => {
   const { receiver_id, subject, body } = req.body;
-  await pool.query('INSERT INTO messages (sender_id,receiver_id,subject,body) VALUES ($1,$2,$3,$4)', [req.user.id, receiver_id, subject, body]);
+  const result = await pool.query('INSERT INTO messages (sender_id,receiver_id,subject,body) VALUES ($1,$2,$3,$4) RETURNING *', [req.user.id, receiver_id, subject, body]);
+  io.to(`user_${receiver_id}`).emit('new_message', result.rows[0]);
   res.json({ message: 'Message sent' });
 });
 
@@ -534,36 +735,39 @@ app.put('/api/notifications/:id/read', authenticate, async (req, res) => {
   res.json({ message: 'Marked read' });
 });
 
-// Classes & Subjects
-app.get('/api/classes', async (req, res) => {
-  const result = await pool.query('SELECT * FROM classes ORDER BY name, stream');
-  res.json(result.rows);
+app.put('/api/notifications/read-all', authenticate, async (req, res) => {
+  await pool.query('UPDATE notifications SET is_read = true WHERE user_id = $1', [req.user.id]);
+  res.json({ message: 'All marked read' });
 });
 
-app.get('/api/subjects', async (req, res) => {
-  const result = await pool.query('SELECT * FROM subjects ORDER BY category, name');
-  res.json(result.rows);
-});
-
-// Activities / Audit Log
+// Activities
 app.get('/api/admin/activities', authenticate, requireRole('admin'), async (req, res) => {
-  const result = await pool.query(`
-    SELECT a.*, u.username, u.first_name, u.last_name
-    FROM activities a LEFT JOIN users u ON u.id = a.user_id
-    ORDER BY a.created_at DESC LIMIT 100
-  `);
+  const result = await pool.query(`SELECT a.*, u.username, u.first_name, u.last_name FROM activities a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.created_at DESC LIMIT 100`);
   res.json(result.rows);
 });
 
 // File upload
-app.post('/api/upload', authenticate, requireRole('admin', 'teacher'), upload.single('file'), (req, res) => {
+app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  res.json({ url: `/uploads/${req.file.filename}`, filename: req.file.originalname });
+  res.json({ url: `/uploads/${req.file.filename}`, filename: req.file.originalname, size: req.file.size });
 });
 
-// Socket.io — real-time notifications
+app.post('/api/upload/multiple', authenticate, upload.array('files', 10), (req, res) => {
+  if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files' });
+  const files = req.files.map(f => ({ url: `/uploads/${f.filename}`, filename: f.originalname, size: f.size }));
+  res.json({ files });
+});
+
+// Socket.io
 io.on('connection', (socket) => {
-  socket.on('join', (userId) => socket.join(`user_${userId}`));
+  socket.on('join', (userId) => {
+    socket.join(`user_${userId}`);
+    pool.query('UPDATE users SET is_online = true WHERE id = $1', [userId]).catch(() => {});
+  });
+  socket.on('leave', (userId) => {
+    socket.leave(`user_${userId}`);
+    pool.query('UPDATE users SET is_online = false WHERE id = $1', [userId]).catch(() => {});
+  });
   socket.on('send_notification', async (data) => {
     const { user_id, type, title, message } = data;
     await pool.query('INSERT INTO notifications (user_id,type,title,message) VALUES ($1,$2,$3,$4)', [user_id, type, title, message]);
@@ -571,7 +775,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// DB exec (admin only — for schema setup)
+// DB exec
 app.post('/api/admin/db', authenticate, requireRole('admin'), async (req, res) => {
   try {
     const { sql } = req.body;
@@ -587,4 +791,4 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const PORT = process.env.PORT || 3000;
 initDB().then(() => {
   server.listen(PORT, '0.0.0.0', () => console.log(`✓ Kalinabiri API running on port ${PORT}`));
-}).catch(e => { console.error('DB init failed:', e); process.exit(1); });
+});
