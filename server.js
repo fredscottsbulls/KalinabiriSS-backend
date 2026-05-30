@@ -578,6 +578,31 @@ app.get('/api/student/assignments', authenticate, requireRole('student'), async 
   res.json(result.rows);
 });
 
+// Student view their own submissions
+app.get('/api/student/submissions', authenticate, requireRole('student'), async (req, res) => {
+  const student = await pool.query('SELECT id FROM students WHERE user_id = $1', [req.user.id]);
+  if (!student.rows[0]) return res.json([]);
+  const result = await pool.query(
+    `SELECT sub.*, a.title as assignment_title, a.subject, a.class
+     FROM assignment_submissions sub
+     JOIN assignments a ON a.id = sub.assignment_id
+     WHERE sub.student_id = $1 ORDER BY sub.submitted_at DESC`,
+    [student.rows[0].id]
+  );
+  res.json(result.rows);
+});
+
+// Student view their own fees
+app.get('/api/student/fees', authenticate, requireRole('student'), async (req, res) => {
+  const student = await pool.query('SELECT id FROM students WHERE user_id = $1', [req.user.id]);
+  if (!student.rows[0]) return res.json([]);
+  const result = await pool.query(
+    `SELECT f.* FROM fees f WHERE f.student_id = $1 ORDER BY f.year DESC, f.term DESC`,
+    [student.rows[0].id]
+  );
+  res.json(result.rows);
+});
+
 // Assignment Submissions
 app.get('/api/admin/submissions', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const { assignment_id } = req.query;

@@ -2,5 +2,6 @@
   "projectId": "cfbe1d74-0fc3-4093-9c32-ec27ccce51b8",
   "environmentId": "f0d1718c-7122-49fd-a75c-77df22828104",
   "serviceId": "9b858df7-425d-405f-9567-2a02b6219a4c",
-  "serviceName": "grateful-transformation"
+  "serviceName": "grateful-transformation",
+  "projectName": "grateful-transformation"
 }
