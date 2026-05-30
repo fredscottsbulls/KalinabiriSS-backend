@@ -270,6 +270,16 @@ app.post('/api/auth/register', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active') RETURNING id,username,email,role`,
       [username, email, hash, role, first_name || '', last_name || '', phone || '', studentClass || '', gender || '']
     );
+// Auto-create teacher/student profile on register
+    if (role === 'teacher') {
+      await pool.query(`INSERT INTO teachers (user_id, employee_id, qualification, department, subjects_taught)
+        VALUES ($1, $2, '', '', ARRAY[]::TEXT[])
+        ON CONFLICT (user_id) DO NOTHING`, [result.rows[0].id, 'T' + result.rows[0].id]);
+    } else if (role === 'student') {
+      await pool.query(`INSERT INTO students (user_id, admission_no, date_of_birth, nationality, guardian_name)
+        VALUES ($1, $2, NULL, '', '')
+        ON CONFLICT (user_id) DO NOTHING`, [result.rows[0].id, 'A' + result.rows[0].id]);
+    }
     res.json({ message: 'Registered successfully', user: result.rows[0] });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'Username or email already exists' });
@@ -512,25 +522,152 @@ app.get('/api/announcements', async (req, res) => {
   res.json(result.rows);
 });
 
+// Announcements with role-based filtering (for teacher student audience, etc.)
 app.get('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const result = await pool.query('SELECT a.*, u.first_name, u.last_name FROM announcements a LEFT JOIN users u ON u.id = a.created_by ORDER BY a.created_at DESC');
   res.json({ announcements: result.rows });
 });
 
 app.post('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const { title, content, category, priority, expires_at } = req.body;
+  const { title, content, category, priority, expires_at, audience, target_class } = req.body;
   const result = await pool.query(
     `INSERT INTO announcements (title,content,category,priority,expires_at,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [title, content, category, priority, expires_at, req.user.id]
+    [title, content, category || 'general', priority || 'normal', expires_at, req.user.id]
   );
   // Real-time broadcast
   io.emit('new_announcement', result.rows[0]);
   res.json({ announcement: result.rows[0] });
 });
 
+app.put('/api/admin/announcements/:id', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const { title, content, category, priority, expires_at } = req.body;
+  const result = await pool.query(
+    `UPDATE announcements SET title=$1,content=$2,category=$3,priority=$4,expires_at=$5 WHERE id=$6 RETURNING *`,
+    [title, content, category, priority, expires_at, req.params.id]
+  );
+  if (result.rows[0]) io.emit('announcement_updated', result.rows[0]);
+  res.json({ announcement: result.rows[0] });
+});
+
 app.delete('/api/admin/announcements/:id', authenticate, requireRole('admin'), async (req, res) => {
   await pool.query('DELETE FROM announcements WHERE id = $1', [req.params.id]);
+  io.emit('announcement_deleted', { id: req.params.id });
   res.json({ message: 'Deleted' });
+});
+
+// Admin create teacher (POST)
+app.post('/api/admin/teachers', authenticate, requireRole('admin'), async (req, res) => {
+  const { username, email, password, first_name, last_name, phone, employee_id, qualification, department, subject } = req.body;
+  const hash = bcrypt.hashSync(password || 'Teacher@2026', 10);
+  const userResult = await pool.query(
+    `INSERT INTO users (username,email,password_hash,role,first_name,last_name,phone,status) VALUES ($1,$2,$3,'teacher',$4,$5,$6,'active') RETURNING id,username,email`,
+    [username, email, hash, first_name, last_name, phone]
+  );
+  const userId = userResult.rows[0].id;
+  await pool.query(
+    `INSERT INTO teachers (user_id,employee_id,qualification,department,subjects_taught) VALUES ($1,$2,$3,$4,$5)`,
+    [userId, employee_id || ('T' + String(Math.floor(Math.random() * 9000) + 1000)), qualification || '', department || '', subject ? [subject] : []]
+  );
+  // Also create teacher_classes if class/subject provided
+  res.json({ message: 'Teacher created', user: userResult.rows[0] });
+});
+
+// Teacher's own students (by class)
+app.get('/api/teacher/students', authenticate, requireRole('teacher'), async (req, res) => {
+  const { class: cls } = req.query;
+  const teacher = await pool.query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id]);
+  if (!teacher.rows[0]) return res.json([]);
+  // Get classes this teacher teaches
+  const classes = await pool.query('SELECT class, stream, subject FROM teacher_classes WHERE teacher_id = $1', [teacher.rows[0].id]);
+  const classList = classes.rows.map(c => c.class);
+  if (!classList.length) return res.json([]);
+  let query = `SELECT u.id, u.username, u.first_name, u.last_name, u.email, u.phone, u.class, u.stream, u.gender, u.status
+               FROM users u WHERE u.role = 'student' AND u.class = ANY($1)`;
+  const params = [classList];
+  if (cls) { params.push(cls); query += ` AND u.class = $${params.length}`; }
+  query += ' ORDER BY u.last_name';
+  const result = await pool.query(query, params);
+  res.json(result.rows);
+});
+
+// Admin classes
+app.get('/api/admin/classes', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const result = await pool.query('SELECT * FROM classes ORDER BY name, stream');
+  res.json({ classes: result.rows });
+});
+
+app.post('/api/admin/classes', authenticate, requireRole('admin'), async (req, res) => {
+  const { name, stream, class_teacher_id } = req.body;
+  const result = await pool.query('INSERT INTO classes (name, stream, class_teacher_id) VALUES ($1,$2,$3) RETURNING *', [name, stream, class_teacher_id]);
+  res.json({ class: result.rows[0] });
+});
+
+app.put('/api/admin/classes/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { name, stream, class_teacher_id } = req.body;
+  const result = await pool.query('UPDATE classes SET name=$1,stream=$2,class_teacher_id=$3 WHERE id=$4 RETURNING *', [name, stream, class_teacher_id, req.params.id]);
+  res.json({ class: result.rows[0] });
+});
+
+app.delete('/api/admin/classes/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM classes WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Class deleted' });
+});
+
+// Admin subjects
+app.get('/api/admin/subjects', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const result = await pool.query('SELECT * FROM subjects ORDER BY category, name');
+  res.json({ subjects: result.rows });
+});
+
+app.post('/api/admin/subjects', authenticate, requireRole('admin'), async (req, res) => {
+  const { name, code, category, level, teacher_id } = req.body;
+  const result = await pool.query('INSERT INTO subjects (name,code,category,level,teacher_id) VALUES ($1,$2,$3,$4,$5) RETURNING *', [name, code, category, level, teacher_id]);
+  res.json({ subject: result.rows[0] });
+});
+
+app.put('/api/admin/subjects/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { name, code, category, level, teacher_id } = req.body;
+  const result = await pool.query('UPDATE subjects SET name=$1,code=$2,category=$3,level=$4,teacher_id=$5 WHERE id=$6 RETURNING *', [name, code, category, level, teacher_id, req.params.id]);
+  res.json({ subject: result.rows[0] });
+});
+
+app.delete('/api/admin/subjects/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM subjects WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Subject deleted' });
+});
+
+// Student gets own data
+app.get('/api/student/dashboard', authenticate, requireRole('student'), async (req, res) => {
+  const student = await pool.query('SELECT s.*, u.username, u.first_name, u.last_name, u.email, u.phone, u.class, u.stream, u.gender FROM students s JOIN users u ON u.id = s.user_id WHERE u.id = $1', [req.user.id]);
+  const assignments = await pool.query(`SELECT a.*, u.first_name, u.last_name FROM assignments a LEFT JOIN users u ON u.id = a.teacher_id WHERE a.class = $1 ORDER BY a.due_date ASC LIMIT 10`, [student.rows[0]?.class || '']);
+  const fees = await pool.query('SELECT * FROM fees WHERE student_id = $1 ORDER BY year DESC, term DESC', [student.rows[0]?.id]);
+  const results = await pool.query(`SELECT r.*, sub.name as subject_name FROM results r JOIN subjects sub ON sub.id = r.subject_id WHERE r.student_id = $1 ORDER BY r.year DESC, r.term DESC LIMIT 20`, [student.rows[0]?.id]);
+  const announcements = await pool.query(`SELECT * FROM announcements WHERE (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 5`);
+  res.json({ student: student.rows[0], assignments: assignments.rows, fees: fees.rows, results: results.rows, announcements: announcements.rows });
+});
+
+// Admin full stats
+app.get('/api/admin/stats', authenticate, requireRole('admin'), async (req, res) => {
+  const students = await pool.query("SELECT COUNT(*) FROM users WHERE role = 'student'");
+  const teachers = await pool.query("SELECT COUNT(*) FROM users WHERE role = 'teacher'");
+  const admissions = await pool.query("SELECT COUNT(*) FROM users WHERE role = 'student' AND created_at > NOW() - INTERVAL '30 days'");
+  const pendingFees = await pool.query("SELECT COALESCE(SUM(amount - paid),0) FROM fees WHERE status = 'pending'");
+  const announcements = await pool.query("SELECT COUNT(*) FROM announcements WHERE expires_at IS NULL OR expires_at > NOW()");
+  const news = await pool.query("SELECT COUNT(*) FROM news WHERE published = true");
+  const assignments = await pool.query("SELECT COUNT(*) FROM assignments");
+  const gallery = await pool.query("SELECT COUNT(*) FROM gallery");
+  res.json({
+    totalStudents: parseInt(students.rows[0].count),
+    totalTeachers: parseInt(teachers.rows[0].count),
+    newAdmissions: parseInt(admissions.rows[0].count),
+    pendingFees: parseFloat(pendingFees.rows[0].sum),
+    announcements: parseInt(announcements.rows[0].count),
+    publishedNews: parseInt(news.rows[0].count),
+    totalAssignments: parseInt(assignments.rows[0].count),
+    totalGallery: parseInt(gallery.rows[0].count),
+    students: parseInt(students.rows[0].count),
+    teachers: parseInt(teachers.rows[0].count),
+  });
 });
 
 // Assignments
