@@ -592,7 +592,7 @@ app.get('/api/teacher/students', authenticate, requireRole('teacher'), async (re
 
 // Admin classes
 app.get('/api/admin/classes', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
-  const result = await pool.query('SELECT * FROM classes ORDER BY name, stream');
+  const result = await pool.query('SELECT c.*, t.employee_id, u.first_name as teacher_first_name, u.last_name as teacher_last_name FROM classes c LEFT JOIN teachers t ON t.id = c.class_teacher_id LEFT JOIN users u ON u.id = t.user_id ORDER BY c.name, c.stream');
   res.json({ classes: result.rows });
 });
 
