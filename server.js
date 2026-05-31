@@ -30,8 +30,9 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 });
-app.use('/api/', limiter);
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many login attempts. Try again in 15 minutes.' } });
+const strictLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+app.use('/api/', strictLimiter);
 
 const authenticate = (req, res, next) => {
   const auth = req.headers.authorization;
@@ -239,7 +240,7 @@ const initDB = async () => {
 app.get('/api/health', (req, res) => res.json({ status: 'ok', school: 'KALINABIRI SECONDARY SCHOOL', version: '2.0' }));
 
 // Auth
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { username, email, password } = req.body;
     const loginField = username || email;
@@ -248,10 +249,7 @@ app.post('/api/auth/login', async (req, res) => {
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const passwordMatch = bcrypt.compareSync(password, user.password_hash)
-      || (password === 'Admin@2026' && user.role === 'admin')
-      || (password === 'Teacher@2026' && user.role === 'teacher')
-      || (password === 'Student@123' && user.role === 'student');
+    const passwordMatch = bcrypt.compareSync(password, user.password_hash);
     if (!passwordMatch) return res.status(401).json({ error: 'Invalid credentials' });
 
     await pool.query('UPDATE users SET last_login = NOW(), is_online = true WHERE id = $1', [user.id]);
@@ -304,9 +302,110 @@ app.put('/api/auth/password', authenticate, async (req, res) => {
 });
 
 app.put('/api/auth/profile', authenticate, async (req, res) => {
-  const { first_name, last_name, phone, email } = req.body;
+const { first_name, last_name, phone, email } = req.body;
   await pool.query('UPDATE users SET first_name=$1,last_name=$2,phone=$3,email=$4 WHERE id=$5', [first_name, last_name, phone, email, req.user.id]);
   res.json({ message: 'Profile updated' });
+});
+
+// Email Verification ─────────────────────────────────────────────────────────
+async function ensureVerificationTable() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS email_verifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER UNIQUE NOT NULL,
+    code VARCHAR(6) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    verified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`);
+}
+ensureVerificationTable();
+
+function generateCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+// Request verification code (logged in user)
+app.post('/api/auth/request-verification', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min
+    await pool.query(
+      `INSERT INTO email_verifications (user_id, code, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET code = $2, expires_at = $3, verified_at = NULL`,
+      [userId, code, expiresAt]
+    );
+    // In production, send via email. For now, return code directly for testing.
+    // Remove this in production — code goes to email only.
+    res.json({ message: 'Verification code sent', code }); // REMOVE 'code' in production
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Verify email with code
+app.post('/api/auth/verify-email', authenticate, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code || code.length !== 6) return res.status(400).json({ error: 'Invalid code format' });
+    const result = await pool.query(
+      `SELECT * FROM email_verifications WHERE user_id = $1 AND code = $2 AND expires_at > NOW() AND verified_at IS NULL`,
+      [req.user.id, code]
+    );
+    if (!result.rows[0]) return res.status(400).json({ error: 'Invalid or expired code' });
+    await pool.query(`UPDATE email_verifications SET verified_at = NOW() WHERE user_id = $1`, [req.user.id]);
+    await pool.query(`UPDATE users SET email_verified = true WHERE id = $1`, [req.user.id]);
+    res.json({ message: 'Email verified successfully', verified: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get verification status
+app.get('/api/auth/verification-status', authenticate, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT email_verified FROM users WHERE id = $1', [req.user.id]);
+    res.json({ verified: r.rows[0]?.email_verified === true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Request password reset (unauthenticated)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const user = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (!user.rows[0]) {
+      // Don't reveal if email exists
+      return res.json({ message: 'If that email exists, a reset link has been sent.' });
+    }
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO email_verifications (user_id, code, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET code = $2, expires_at = $3, verified_at = NULL`,
+      [user.rows[0].id, code, expiresAt]
+    );
+    res.json({ message: 'If that email exists, a reset code has been sent.', code }); // REMOVE 'code' in production
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Reset password with code
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { email, code, new_password } = req.body;
+    if (!email || !code || !new_password) return res.status(400).json({ error: 'All fields required' });
+    if (new_password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const result = await pool.query(
+      `SELECT ev.user_id FROM email_verifications ev
+       JOIN users u ON u.id = ev.user_id
+       WHERE u.email = $1 AND ev.code = $2 AND ev.expires_at > NOW() AND ev.verified_at IS NULL`,
+      [email, code]
+    );
+    if (!result.rows[0]) return res.status(400).json({ error: 'Invalid or expired code' });
+    const hash = bcrypt.hashSync(new_password, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, result.rows[0].user_id]);
+    await pool.query('UPDATE email_verifications SET verified_at = NOW() WHERE user_id = $1', [result.rows[0].user_id]);
+    res.json({ message: 'Password reset successful' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Stats
