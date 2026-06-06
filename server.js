@@ -75,7 +75,7 @@ const initDB = async () => {
       experience_years INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT NOW()
     )`);
     await client.query(`CREATE TABLE IF NOT EXISTS subjects (
-      id SERIAL PRIMARY KEY, name VARCHAR(100), code VARCHAR(20),
+      id SERIAL PRIMARY KEY, name VARCHAR(100), code VARCHAR(20) UNIQUE,
       category VARCHAR(20), level VARCHAR(20), teacher_id INTEGER REFERENCES teachers(id),
       created_at TIMESTAMP DEFAULT NOW()
     )`);
