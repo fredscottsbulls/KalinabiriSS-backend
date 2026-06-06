@@ -239,6 +239,133 @@ const initDB = async () => {
 // ── Routes ──────────────────────────────────────────────
 app.get('/api/health', (req, res) => res.json({ status: 'ok', school: 'KALINABIRI SECONDARY SCHOOL', version: '2.0' }));
 
+// Seed route — drops and recreates schema, seeds admin + teachers + subjects
+app.post('/api/seed', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      // Drop old tables
+      await client.query(`DROP TABLE IF EXISTS activities CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS student_classes CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS teacher_classes CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS submissions CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS assignments CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS attendance_records CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS results CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS teachers CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS students CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS subjects CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS announcements CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS site_settings CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS users CASCADE`);
+      await client.query(`DROP TABLE IF EXISTS classes CASCADE`);
+
+      // Recreate schema
+      await client.query(`CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE, email VARCHAR(100) UNIQUE,
+        password_hash TEXT, role VARCHAR(20), first_name VARCHAR(50), last_name VARCHAR(50),
+        phone VARCHAR(20), status VARCHAR(20) DEFAULT 'active', created_at TIMESTAMP DEFAULT NOW()
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS classes (
+        id SERIAL PRIMARY KEY, name VARCHAR(50) UNIQUE, level VARCHAR(20), stream VARCHAR(20), year INTEGER
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS subjects (
+        id SERIAL PRIMARY KEY, name VARCHAR(100), code VARCHAR(20) UNIQUE,
+        category VARCHAR(50), level VARCHAR(20)
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS students (
+        id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), registration_number VARCHAR(50) UNIQUE,
+        class VARCHAR(20), stream VARCHAR(20), year INTEGER, term INTEGER, status VARCHAR(20) DEFAULT 'active'
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS teachers (
+        id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), employee_id VARCHAR(50) UNIQUE,
+        qualification TEXT, department VARCHAR(100)
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS results (
+        id SERIAL PRIMARY KEY, student_id INTEGER REFERENCES students(id), subject_id INTEGER REFERENCES subjects(id),
+        academic_year INTEGER, term INTEGER, score DECIMAL(5,2), grade VARCHAR(5), remarks TEXT, exam_type VARCHAR(50)
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS attendance_records (
+        id SERIAL PRIMARY KEY, student_id INTEGER REFERENCES students(id), date DATE, status VARCHAR(10), term INTEGER, year INTEGER
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS announcements (
+        id SERIAL PRIMARY KEY, title VARCHAR(200), content TEXT, author_id INTEGER REFERENCES users(id), category VARCHAR(50), pinned BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW()
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS site_settings (
+        id SERIAL PRIMARY KEY, key VARCHAR(100) UNIQUE, value TEXT
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS assignments (
+        id SERIAL PRIMARY KEY, teacher_id INTEGER REFERENCES teachers(id), class VARCHAR(20), stream VARCHAR(20),
+        subject VARCHAR(100), title VARCHAR(200), description TEXT, due_date TIMESTAMP, created_at TIMESTAMP DEFAULT NOW()
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS submissions (
+        id SERIAL PRIMARY KEY, assignment_id INTEGER REFERENCES assignments(id) ON DELETE CASCADE,
+        student_id INTEGER REFERENCES students(id), submission_text TEXT, attachment_urls TEXT[],
+        submitted_at TIMESTAMP DEFAULT NOW(), marks INTEGER, feedback TEXT, graded_by INTEGER REFERENCES users(id), graded_at TIMESTAMP
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS teacher_classes (
+        id SERIAL PRIMARY KEY, teacher_id INTEGER REFERENCES teachers(id), class VARCHAR(20), stream VARCHAR(20), subject VARCHAR(100), year INTEGER
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS student_classes (
+        id SERIAL PRIMARY KEY, student_id INTEGER REFERENCES students(id), class VARCHAR(20), stream VARCHAR(20), year INTEGER, term INTEGER,
+        UNIQUE(student_id, class, stream, year, term)
+      )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS activities (
+        id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), action VARCHAR(200), entity_type VARCHAR(50),
+        entity_id INTEGER, details JSONB, created_at TIMESTAMP DEFAULT NOW()
+      )`);
+
+      // Seed admin
+      const hash = bcrypt.hashSync('Admin@2026', 10);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, status)
+        VALUES ('admin', 'admin@kalinabiriss.ac.ug', $1, 'admin', 'System', 'Administrator', 'active')`, [hash]);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('school_name', 'KALINABIRI SECONDARY SCHOOL') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('motto', 'Discipline is the Bridge between Goals and Accomplishment') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('phone', '+256 700 123 456') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('email', 'info@kalinabiriss.ac.ug') ON CONFLICT DO NOTHING`);
+      await client.query(`INSERT INTO site_settings (key, value) VALUES ('address', 'Ntinda, Kampala, Uganda') ON CONFLICT DO NOTHING`);
+
+      // Seed teachers
+      const t1 = bcrypt.hashSync('Teacher@2026', 10);
+      const t2 = bcrypt.hashSync('Teacher@2026', 10);
+      const t3 = bcrypt.hashSync('Teacher@2026', 10);
+      const t4 = bcrypt.hashSync('Teacher@2026', 10);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('kagaba', 'kagaba@kal.com', $1, 'teacher', 'John', 'Kagaba', '+256 700 111 111', 'active')`, [t1]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('nakato', 'nakato@kal.com', $2, 'teacher', 'Grace', 'Nakato', '+256 700 222 222', 'active')`, [t2]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('ssekitoleko', 'ssekitoleko@kal.com', $3, 'teacher', 'Robert', 'Ssekitoleko', '+256 700 333 333', 'active')`, [t3]);
+      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES ('namutebi', 'namutebi@kal.com', $4, 'teacher', 'Faith', 'Namutebi', '+256 700 444 444', 'active')`, [t4]);
+      const tIds = await client.query(`SELECT id FROM users WHERE role = 'teacher' ORDER BY id`);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T001', 'Bachelor of Education', 'Mathematics') ON CONFLICT DO NOTHING`, [tIds.rows[0].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T002', 'Master of Arts', 'Languages') ON CONFLICT DO NOTHING`, [tIds.rows[1].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T003', 'Bachelor of Science', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[2].id]);
+      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T004', 'Master of Chemistry', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[3].id]);
+
+      // Seed subjects
+      const subjects = [
+        ['Mathematics', 'MATH', 'Mathematics', 'O Level'], ['English', 'ENG', 'Languages', 'O Level'],
+        ['Physics', 'PHY', 'Sciences', 'A Level'], ['Chemistry', 'CHEM', 'Sciences', 'A Level'],
+        ['Biology', 'BIO', 'Sciences', 'O Level'], ['Geography', 'GEO', 'Humanities', 'O Level'],
+        ['History', 'HIST', 'Humanities', 'O Level'], ['CRE', 'CRE', 'Humanities', 'O Level'],
+        ['Agriculture', 'AGR', 'Applied', 'O Level'], ['ICT', 'ICT', 'Applied', 'O Level']
+      ];
+      for (const [name, code, cat, lvl] of subjects) {
+        await client.query(`INSERT INTO subjects (name, code, category, level) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [name, code, cat, lvl]);
+      }
+
+      res.json({ success: true, message: 'Database seeded successfully', admin: 'admin@kalinabiriss.ac.ug / Admin@2026' });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('Seed error:', err);
+    res.status(500).json({ error: 'Seed failed', details: err.message });
+  }
+});
+
 // Auth
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
