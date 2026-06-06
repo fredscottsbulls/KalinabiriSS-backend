@@ -51,6 +51,21 @@ const requireRole = (...roles) => (req, res, next) =>
 const initDB = async () => {
   const client = await pool.connect();
   try {
+    // Migration: add missing columns to existing tables
+    const migrate = async (table, col, def) => {
+      try {
+        await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${def}`);
+      } catch (_) {}
+    };
+    await migrate('users', 'is_online', 'BOOLEAN DEFAULT false');
+    await migrate('users', 'last_login', 'TIMESTAMP');
+    await migrate('users', 'address', 'TEXT');
+    await migrate('users', 'emergency_contact', 'VARCHAR(100)');
+    await migrate('users', 'avatar_url', 'TEXT');
+    await migrate('users', 'class', 'VARCHAR(20)');
+    await migrate('users', 'stream', 'VARCHAR(20)');
+    await migrate('users', 'gender', 'VARCHAR(10)');
+
     await client.query(`CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE, email VARCHAR(100) UNIQUE,
       password_hash TEXT NOT NULL, role VARCHAR(20) DEFAULT 'student',
