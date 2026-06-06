@@ -278,7 +278,7 @@ app.post('/api/seed', async (req, res) => {
         class VARCHAR(20), stream VARCHAR(20), year INTEGER, term INTEGER, status VARCHAR(20) DEFAULT 'active'
       )`);
       await client.query(`CREATE TABLE IF NOT EXISTS teachers (
-        id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), employee_id VARCHAR(50) UNIQUE,
+        id SERIAL PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), employee_id VARCHAR(50) UNIQUE,
         qualification TEXT, department VARCHAR(100)
       )`);
       await client.query(`CREATE TABLE IF NOT EXISTS results (
