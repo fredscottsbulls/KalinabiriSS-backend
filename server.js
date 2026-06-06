@@ -318,31 +318,38 @@ app.post('/api/seed', async (req, res) => {
       // Seed admin
       const hash = bcrypt.hashSync('Admin@2026', 10);
       await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, status)
-        VALUES ('admin', 'admin@kalinabiriss.ac.ug', $1, 'admin', 'System', 'Administrator', 'active')`, [hash]);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('school_name', 'KALINABIRI SECONDARY SCHOOL') ON CONFLICT DO NOTHING`);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('motto', 'Discipline is the Bridge between Goals and Accomplishment') ON CONFLICT DO NOTHING`);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('phone', '+256 700 123 456') ON CONFLICT DO NOTHING`);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('email', 'info@kalinabiriss.ac.ug') ON CONFLICT DO NOTHING`);
-      await client.query(`INSERT INTO site_settings (key, value) VALUES ('address', 'Ntinda, Kampala, Uganda') ON CONFLICT DO NOTHING`);
+        VALUES ('admin', 'admin@kalinabiriss.ac.ug', $1, 'admin', 'System', 'Administrator', 'active')
+        ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash RETURNING id`, [hash]);
 
-      // Seed teachers
+      // Seed teachers (upsert so RETURNING always gives us IDs)
       const t1 = bcrypt.hashSync('Teacher@2026', 10);
       const t2 = bcrypt.hashSync('Teacher@2026', 10);
       const t3 = bcrypt.hashSync('Teacher@2026', 10);
       const t4 = bcrypt.hashSync('Teacher@2026', 10);
-      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
-        VALUES ('kagaba', 'kagaba@kal.com', $1, 'teacher', 'John', 'Kagaba', '+256 700 111 111', 'active')`, [t1]);
-      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
-        VALUES ('nakato', 'nakato@kal.com', $2, 'teacher', 'Grace', 'Nakato', '+256 700 222 222', 'active')`, [t2]);
-      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
-        VALUES ('ssekitoleko', 'ssekitoleko@kal.com', $3, 'teacher', 'Robert', 'Ssekitoleko', '+256 700 333 333', 'active')`, [t3]);
-      await client.query(`INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
-        VALUES ('namutebi', 'namutebi@kal.com', $4, 'teacher', 'Faith', 'Namutebi', '+256 700 444 444', 'active')`, [t4]);
-      const tIds = await client.query(`SELECT id FROM users WHERE role = 'teacher' ORDER BY id`);
-      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T001', 'Bachelor of Education', 'Mathematics') ON CONFLICT DO NOTHING`, [tIds.rows[0].id]);
-      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T002', 'Master of Arts', 'Languages') ON CONFLICT DO NOTHING`, [tIds.rows[1].id]);
-      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T003', 'Bachelor of Science', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[2].id]);
-      await client.query(`INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES ($1, 'T004', 'Master of Chemistry', 'Sciences') ON CONFLICT DO NOTHING`, [tIds.rows[3].id]);
+      const teacherInserts = await client.query(`
+        INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, status)
+        VALUES 
+ ('kagaba', 'kagaba@kal.com', $1, 'teacher', 'John', 'Kagaba', '+256 700 111 111', 'active'),
+          ('nakato', 'nakato@kal.com', $2, 'teacher', 'Grace', 'Nakato', '+256 700 222 222', 'active'),
+          ('ssekitoleko', 'ssekitoleko@kal.com', $3, 'teacher', 'Robert', 'Ssekitoleko', '+256 700 333 333', 'active'),
+          ('namutebi', 'namutebi@kal.com', $4, 'teacher', 'Faith', 'Namutebi', '+256 700 444 444', 'active')
+        ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash
+        RETURNING id
+      `, [t1, t2, t3, t4]);
+
+      const tid0 = teacherInserts.rows[0].id;
+      const tid1 = teacherInserts.rows[1].id;
+      const tid2 = teacherInserts.rows[2].id;
+      const tid3 = teacherInserts.rows[3].id;
+
+      await client.query(`
+        INSERT INTO teachers (user_id, employee_id, qualification, department) VALUES
+ ($1, 'T001', 'Bachelor of Education', 'Mathematics'),
+          ($2, 'T002', 'Master of Arts', 'Languages'),
+          ($3, 'T003', 'Bachelor of Science', 'Sciences'),
+          ($4, 'T004', 'Master of Chemistry', 'Sciences')
+        ON CONFLICT (user_id) DO UPDATE SET employee_id = EXCLUDED.employee_id
+      `, [tid0, tid1, tid2, tid3]);
 
       // Seed subjects
       const subjects = [
