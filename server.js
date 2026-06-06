@@ -264,7 +264,7 @@ app.post('/api/seed', async (req, res) => {
       await client.query(`CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE, email VARCHAR(100) UNIQUE,
         password_hash TEXT, role VARCHAR(20), first_name VARCHAR(50), last_name VARCHAR(50),
-        phone VARCHAR(20), status VARCHAR(20) DEFAULT 'active', created_at TIMESTAMP DEFAULT NOW()
+        phone VARCHAR(20), status VARCHAR(20) DEFAULT 'active', last_login TIMESTAMP, created_at TIMESTAMP DEFAULT NOW()
       )`);
       await client.query(`CREATE TABLE IF NOT EXISTS classes (
         id SERIAL PRIMARY KEY, name VARCHAR(50) UNIQUE, level VARCHAR(20), stream VARCHAR(20), year INTEGER
