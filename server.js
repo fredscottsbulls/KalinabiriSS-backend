@@ -65,6 +65,7 @@ const initDB = async () => {
     await migrate('users', 'class', 'VARCHAR(20)');
     await migrate('users', 'stream', 'VARCHAR(20)');
     await migrate('users', 'gender', 'VARCHAR(10)');
+    await migrate('students', 'house', 'VARCHAR(50)');
 
     await client.query(`CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE, email VARCHAR(100) UNIQUE,
@@ -803,6 +804,12 @@ app.delete('/api/admin/announcements/:id', authenticate, requireRole('admin'), a
   await pool.query('DELETE FROM announcements WHERE id = $1', [req.params.id]);
   io.emit('announcement_deleted', { id: req.params.id });
   res.json({ message: 'Deleted' });
+});
+
+// Admin get teachers
+app.get('/api/admin/teachers', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
+  const r = await pool.query(`SELECT u.id,u.username,u.email,u.first_name,u.last_name,u.phone,u.status,u.created_at,t.employee_id,t.qualification,t.department,t.subjects_taught FROM users u LEFT JOIN teachers t ON t.user_id=u.id WHERE u.role='teacher' ORDER BY u.created_at DESC`);
+  res.json(r.rows);
 });
 
 // Admin create teacher (POST)
