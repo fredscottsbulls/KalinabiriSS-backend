@@ -84,12 +84,18 @@ const initDB = async () => {
       medical_conditions TEXT, house VARCHAR(50), clubs TEXT[],
       created_at TIMESTAMP DEFAULT NOW()
     )`);
-    await client.query(`CREATE TABLE IF NOT EXISTS teachers (
+await client.query(`CREATE TABLE IF NOT EXISTS teachers (
       id SERIAL PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
       employee_id VARCHAR(50) UNIQUE, qualification VARCHAR(100),
       subjects_taught TEXT[], department VARCHAR(50),
       experience_years INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT NOW()
     )`);
+
+    await client.query(`CREATE TABLE IF NOT EXISTS parents (
+      id SERIAL PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      relationship VARCHAR(50), occupation VARCHAR(100), address TEXT, created_at TIMESTAMP DEFAULT NOW()
+    )`);
+
     await client.query(`CREATE TABLE IF NOT EXISTS subjects (
       id SERIAL PRIMARY KEY, name VARCHAR(100), code VARCHAR(20) UNIQUE,
       category VARCHAR(20), level VARCHAR(20), teacher_id INTEGER REFERENCES teachers(id),
@@ -656,7 +662,80 @@ app.post('/api/admin/students', authenticate, requireRole('admin'), async (req, 
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [userId, admission_no, date_of_birth, nationality, guardian_name, guardian_phone, house]
   );
-  res.json({ message: 'Student created', userId });
+res.json({ message: 'Student created', userId });
+});
+
+// Admin update student
+app.put('/api/admin/students/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { first_name, last_name, email, phone, class: studentClass, stream, gender, admission_no, guardian_name, guardian_phone, house } = req.body;
+  const r = await pool.query(
+    `UPDATE users SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),email=COALESCE($3,email),phone=COALESCE($4,phone),class=COALESCE($5,class),stream=COALESCE($6,stream),gender=COALESCE($7,gender) WHERE id=$8 RETURNING *`,
+    [first_name, last_name, email, phone, studentClass, stream, gender, req.params.id]
+  );
+  if (r.rows[0]) await pool.query(
+    `UPDATE students SET admission_no=COALESCE($1,admission_no),guardian_name=COALESCE($2,guardian_name),guardian_phone=COALESCE($3,guardian_phone),house=COALESCE($4,house) WHERE user_id=$5`,
+    [admission_no, guardian_name, guardian_phone, house, req.params.id]
+  );
+  res.json(r.rows[0] || {});
+});
+
+// Admin delete student
+app.delete('/api/admin/students/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM users WHERE id=$1', [req.params.id]);
+  res.json({ message: 'Deleted' });
+});
+
+// Admin update teacher
+app.put('/api/admin/teachers/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { first_name, last_name, email, phone, employee_id, qualification, department } = req.body;
+  const r = await pool.query(
+    `UPDATE users SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),email=COALESCE($3,email),phone=COALESCE($4,phone) WHERE id=$5 RETURNING *`,
+    [first_name, last_name, email, phone, req.params.id]
+  );
+  if (r.rows[0]) await pool.query(
+    `UPDATE teachers SET employee_id=COALESCE($1,employee_id),qualification=COALESCE($2,qualification),department=COALESCE($3,department) WHERE user_id=$4`,
+    [employee_id, qualification, department, req.params.id]
+  );
+  res.json(r.rows[0] || {});
+});
+
+// Admin delete teacher
+app.delete('/api/admin/teachers/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM users WHERE id=$1', [req.params.id]);
+  res.json({ message: 'Deleted' });
+});
+
+// Admin get parents
+app.get('/api/admin/parents', authenticate, requireRole('admin'), async (req, res) => {
+  const result = await pool.query(`SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone, u.status, p.relationship, p.occupation, p.address FROM users u LEFT JOIN parents p ON p.user_id = u.id WHERE u.role = 'parent' ORDER BY u.created_at DESC`);
+  res.json(result.rows);
+});
+
+// Admin create parent
+app.post('/api/admin/parents', authenticate, requireRole('admin'), async (req, res) => {
+  const { username, email, password, first_name, last_name, phone, relationship, occupation, address } = req.body;
+  const hash = bcrypt.hashSync(password || 'Parent@2026', 10);
+  const userResult = await pool.query(
+    `INSERT INTO users (username,email,password_hash,role,first_name,last_name,phone,status) VALUES ($1,$2,$3,'parent',$4,$5,$6,'active') RETURNING id`,
+    [username, email, hash, first_name, last_name, phone]
+  );
+  const userId = userResult.rows[0].id;
+  await pool.query(`INSERT INTO parents (user_id,relationship,occupation,address) VALUES ($1,$2,$3,$4)`, [userId, relationship || '', occupation || '', address || '']);
+  res.json({ message: 'Parent created', userId });
+});
+
+// Admin update parent
+app.put('/api/admin/parents/:id', authenticate, requireRole('admin'), async (req, res) => {
+  const { first_name, last_name, email, phone, relationship, occupation, address } = req.body;
+  const r = await pool.query(`UPDATE users SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),email=COALESCE($3,email),phone=COALESCE($4,phone) WHERE id=$5 RETURNING *`, [first_name, last_name, email, phone, req.params.id]);
+  if (r.rows[0]) await pool.query(`UPDATE parents SET relationship=COALESCE($1,relationship),occupation=COALESCE($2,occupation),address=COALESCE($3,address) WHERE user_id=$4`, [relationship, occupation, address, req.params.id]);
+  res.json(r.rows[0] || {});
+});
+
+// Admin delete parent
+app.delete('/api/admin/parents/:id', authenticate, requireRole('admin'), async (req, res) => {
+  await pool.query('DELETE FROM users WHERE id=$1', [req.params.id]);
+  res.json({ message: 'Deleted' });
 });
 
 // Results
