@@ -82,9 +82,25 @@ const initDB = async () => {
       former_school TEXT, religion VARCHAR(50), guardian_name VARCHAR(100),
       guardian_phone VARCHAR(20), guardian_relation VARCHAR(50),
       medical_conditions TEXT, house VARCHAR(50), clubs TEXT[],
-      created_at TIMESTAMP DEFAULT NOW()
-    )`);
-await client.query(`CREATE TABLE IF NOT EXISTS teachers (
+)`);
+    // Migrations: add columns that may not exist in older deployed databases
+    const studentCols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'students'`);
+    const existingCols = studentCols.rows.map(r => r.column_name);
+    if (!existingCols.includes('admission_no')) {
+      await client.query(`ALTER TABLE students ADD COLUMN admission_no VARCHAR(50) UNIQUE`);
+      console.log('Migration: added admission_no column to students');
+    }
+    if (!existingCols.includes('stream')) {
+      await client.query(`ALTER TABLE students ADD COLUMN stream VARCHAR(20) DEFAULT 'A'`);
+      console.log('Migration: added stream column to students');
+    }
+    if (!existingCols.includes('house')) {
+      await client.query(`ALTER TABLE students ADD COLUMN house VARCHAR(50)`);
+    }
+    if (!existingCols.includes('clubs')) {
+      await client.query(`ALTER TABLE students ADD COLUMN clubs TEXT[]`);
+    }
+    await client.query(`CREATE TABLE IF NOT EXISTS teachers (
       id SERIAL PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
       employee_id VARCHAR(50) UNIQUE, qualification VARCHAR(100),
       subjects_taught TEXT[], department VARCHAR(50),
@@ -418,23 +434,40 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, email, password, role, first_name, last_name, phone, class: studentClass, gender } = req.body;
+    const { username, email, password, role, first_name, last_name, phone, class: studentClass, stream, gender, studentNumber } = req.body;
     if (!username || !email || !password || !role) return res.status(400).json({ error: 'Missing required fields' });
     const hash = bcrypt.hashSync(password, 10);
     const result = await pool.query(
-      `INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, class, gender, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active') RETURNING id,username,email,role`,
-      [username, email, hash, role, first_name || '', last_name || '', phone || '', studentClass || '', gender || '']
+      `INSERT INTO users (username, email, password_hash, role, first_name, last_name, phone, class, stream, gender, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active') RETURNING id,username,email,role`,
+      [username, email, hash, role, first_name || '', last_name || '', phone || '', studentClass || '', stream || '', gender || '']
     );
-// Auto-create teacher/student profile on register
     if (role === 'teacher') {
       await pool.query(`INSERT INTO teachers (user_id, employee_id, qualification, department, subjects_taught)
         VALUES ($1, $2, '', '', ARRAY[]::TEXT[])
         ON CONFLICT (user_id) DO NOTHING`, [result.rows[0].id, 'T' + result.rows[0].id]);
     } else if (role === 'student') {
-      await pool.query(`INSERT INTO students (user_id, admission_no, date_of_birth, nationality, guardian_name)
-        VALUES ($1, $2, NULL, '', '')
-        ON CONFLICT (user_id) DO NOTHING`, [result.rows[0].id, 'A' + result.rows[0].id]);
+      let admissionNo = studentNumber || null;
+      if (!admissionNo) {
+        const year = new Date().getFullYear();
+        const countRes = await pool.query("SELECT COUNT(*) FROM students WHERE admission_no LIKE $1", ['KSS/' + year + '/%']);
+        const seq = parseInt(countRes.rows[0].count) + 1;
+        admissionNo = 'KSS/' + year + '/' + String(seq).padStart(3, '0');
+      }
+      await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS admission_no VARCHAR(50) UNIQUE`);
+      await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS stream VARCHAR(20) DEFAULT 'A'`);
+      await pool.query(`INSERT INTO students (user_id, admission_no, stream)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE SET admission_no = EXCLUDED.admission_no, stream = EXCLUDED.stream`,
+        [result.rows[0].id, admissionNo, stream || 'A']);
+      // Notify teachers of this class
+      try {
+        await pool.query(`INSERT INTO notifications (user_id, type, title, message, is_read, created_at)
+          SELECT t.user_id, 'student_register', 'New Student Registered',
+          'A new student (' || $1 || ' ' || $2 || ') has joined class ' || $3, false, NOW()
+          FROM teachers t JOIN users u ON u.id = t.user_id WHERE u.class = $3`,
+          [first_name || '', last_name || '', studentClass || '']);
+      } catch (notifErr) { console.error('Teacher notification failed:', notifErr.message); }
     }
     res.json({ message: 'Registered successfully', user: result.rows[0] });
   } catch (e) {
