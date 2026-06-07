@@ -113,7 +113,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, email, password, role = 'student', first_name, last_name, phone, class: cls, stream } = req.body;
+    const { username, email, password, role = 'student', first_name, last_name, phone, class: cls, stream, admission_no } = req.body;
     if (!username || !email || !password) return res.status(400).json({ error: 'All fields required' });
     const exists = await query('SELECT id FROM users WHERE email = $1 OR username = $2', [email, username]);
     if (exists.rows.length) return res.status(409).json({ error: 'Username or email already exists' });
@@ -124,9 +124,31 @@ app.post('/api/auth/register', async (req, res) => {
       [username, email, hash, role, first_name, last_name, phone, cls, stream]
     );
     const user = rows[0];
+
+    // Auto-create students/teachers row after user registration
+    if (role === 'student') {
+      const studentAdm = admission_no || `KSS/${new Date().getFullYear()}/${String(user.id).padStart(3, '0')}`;
+      await query(
+        `INSERT INTO students (user_id, admission_no, first_name, last_name, class, stream, phone, email, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active')`,
+        [user.id, studentAdm, first_name, last_name, cls || '', stream || 'A', phone, email]
+      );
+    }
+
     const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     res.status(201).json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Registration failed' }); }
+});
+
+// Migration endpoint — fix missing admission_no column on Railway DB
+app.post('/api/migrate', authenticate, requireRole('admin'), async (req, res) => {
+  try {
+    // Ensure admission_no column exists
+    await query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS admission_no VARCHAR(50) UNIQUE`);
+    // Backfill admission_no for any student rows that are missing it
+    await query(`UPDATE students SET admission_no = COALESCE(admission_no, CONCAT('KSS/', EXTRACT(YEAR FROM created_at), '/', LPAD(id::text, 3, '0'))) WHERE admission_no IS NULL OR admission_no = ''`);
+    res.json({ message: 'Migration complete', ts: new Date().toISOString() });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Migration failed: ' + e.message }); }
 });
 
 // ── Admin Stats ──────────────────────────────────────────────────
