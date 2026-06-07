@@ -885,6 +885,21 @@ app.get('/api/announcements', async (req, res) => {
   res.json(result.rows);
 });
 
+// Sync/pull — used by dataApi.js to sync dashboards with backend
+app.get('/api/sync/pull', authenticate, async (req, res) => {
+  try {
+    const students = await pool.query(`SELECT u.id,u.username,u.first_name,u.last_name,u.email,u.phone,u.class,u.stream,u.gender,u.status,u.created_at,
+      s.admission_no,s.date_of_birth,s.nationality,s.guardian_name,s.guardian_phone,s.house
+      FROM users u LEFT JOIN students s ON s.user_id = u.id WHERE u.role = 'student'`);
+    const teachers = await pool.query(`SELECT u.id,u.username,u.first_name,u.last_name,u.email,u.phone,u.gender,u.status,u.class,u.stream,
+      t.employee_id,t.subjects_taught,t.department
+      FROM users u LEFT JOIN teachers t ON t.user_id = u.id WHERE u.role = 'teacher'`);
+    const results = await pool.query(`SELECT * FROM results ORDER BY id DESC LIMIT 200`);
+    const attendance = await pool.query(`SELECT * FROM attendance ORDER BY id DESC LIMIT 200`);
+    res.json({ students: students.rows, teachers: teachers.rows, results: results.rows, attendance: attendance.rows });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Sync failed' }); }
+});
+
 // Announcements with role-based filtering (for teacher student audience, etc.)
 app.get('/api/admin/announcements', authenticate, requireRole('admin', 'teacher'), async (req, res) => {
   const result = await pool.query('SELECT a.*, u.first_name, u.last_name FROM announcements a LEFT JOIN users u ON u.id = a.created_by ORDER BY a.created_at DESC');
